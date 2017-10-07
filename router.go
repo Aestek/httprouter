@@ -110,7 +110,7 @@ func (ps Params) ByName(name string) string {
 // Router is a http.Handler which can be used to dispatch requests to different
 // handler functions via configurable routes
 type Router struct {
-	trees map[string]*node
+	routes RouteSet
 
 	// Enables automatic redirection if the current route can't be matched but a
 	// handler for the path with (without) the trailing slash exists.
@@ -219,21 +219,22 @@ func (r *Router) DELETE(path string, handle Handle) {
 // frequently used, non-standardized or custom methods (e.g. for internal
 // communication with a proxy).
 func (r *Router) Handle(method, path string, handle Handle) {
-	if path[0] != '/' {
-		panic("path must begin with '/' in path '" + path + "'")
+	if r.routes == nil {
+		r.routes = NewRouteSet()
 	}
 
-	if r.trees == nil {
-		r.trees = make(map[string]*node)
+	err := r.routes.AddRoute(method, path, handle)
+	if err != nil {
+		panic(err)
 	}
+}
 
-	root := r.trees[method]
-	if root == nil {
-		root = new(node)
-		r.trees[method] = root
-	}
-
-	root.addRoute(path, handle)
+// ReplaceRouteSet replaces all the routes used by the router. A new RouteSet
+// can be careated with NewRouteSet(), and routes added to it with .AddRoute().
+// This allows to replace routes after the router has started.
+// The RouteSet must not be modified after this method has been called.
+func (r *Router) ReplaceRouteSet(routes RouteSet) {
+	r.routes = routes
 }
 
 // Handler is an adapter which allows the usage of an http.Handler as a
@@ -287,7 +288,7 @@ func (r *Router) recv(w http.ResponseWriter, req *http.Request) {
 // values. Otherwise the third return value indicates whether a redirection to
 // the same path with an extra / without the trailing slash should be performed.
 func (r *Router) Lookup(method, path string) (Handle, Params, bool) {
-	if root := r.trees[method]; root != nil {
+	if root := r.routes[method]; root != nil {
 		return root.getValue(path)
 	}
 	return nil, nil, false
@@ -295,7 +296,7 @@ func (r *Router) Lookup(method, path string) (Handle, Params, bool) {
 
 func (r *Router) allowed(path, reqMethod string) (allow string) {
 	if path == "*" { // server-wide
-		for method := range r.trees {
+		for method := range r.routes {
 			if method == "OPTIONS" {
 				continue
 			}
@@ -308,13 +309,13 @@ func (r *Router) allowed(path, reqMethod string) (allow string) {
 			}
 		}
 	} else { // specific path
-		for method := range r.trees {
+		for method := range r.routes {
 			// Skip the requested method - we already tried this one
 			if method == reqMethod || method == "OPTIONS" {
 				continue
 			}
 
-			handle, _, _ := r.trees[method].getValue(path)
+			handle, _, _ := r.routes[method].getValue(path)
 			if handle != nil {
 				// add request method to list of allowed methods
 				if len(allow) == 0 {
@@ -339,7 +340,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	path := req.URL.Path
 
-	if root := r.trees[req.Method]; root != nil {
+	if root := r.routes[req.Method]; root != nil {
 		if handle, ps, tsr := root.getValue(path); handle != nil {
 			handle(w, req, ps)
 			return

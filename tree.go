@@ -5,6 +5,7 @@
 package httprouter
 
 import (
+	"errors"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -77,7 +78,7 @@ func (n *node) incrementChildPrio(pos int) int {
 
 // addRoute adds a node with the given handle to the path.
 // Not concurrency-safe!
-func (n *node) addRoute(path string, handle Handle) {
+func (n *node) addRoute(path string, handle Handle) error {
 	fullPath := path
 	n.priority++
 	numParams := countParams(path)
@@ -155,7 +156,7 @@ func (n *node) addRoute(path string, handle Handle) {
 							pathSeg = strings.SplitN(path, "/", 2)[0]
 						}
 						prefix := fullPath[:strings.Index(fullPath, pathSeg)] + n.path
-						panic("'" + pathSeg +
+						return errors.New("'" + pathSeg +
 							"' in new path '" + fullPath +
 							"' conflicts with existing wildcard '" + n.path +
 							"' in existing prefix '" + prefix +
@@ -192,24 +193,28 @@ func (n *node) addRoute(path string, handle Handle) {
 					n.incrementChildPrio(len(n.indices) - 1)
 					n = child
 				}
-				n.insertChild(numParams, path, fullPath, handle)
-				return
+				return n.insertChild(numParams, path, fullPath, handle)
 
 			} else if i == len(path) { // Make node a (in-path) leaf
 				if n.handle != nil {
-					panic("a handle is already registered for path '" + fullPath + "'")
+					return errors.New("a handle is already registered for path '" + fullPath + "'")
 				}
 				n.handle = handle
 			}
-			return
+			return nil
 		}
 	} else { // Empty tree
-		n.insertChild(numParams, path, fullPath, handle)
+		err := n.insertChild(numParams, path, fullPath, handle)
+		if err != nil {
+			return err
+		}
 		n.nType = root
 	}
+
+	return nil
 }
 
-func (n *node) insertChild(numParams uint8, path, fullPath string, handle Handle) {
+func (n *node) insertChild(numParams uint8, path, fullPath string, handle Handle) error {
 	var offset int // already handled bytes of the path
 
 	// find prefix until first wildcard (beginning with ':'' or '*'')
@@ -225,7 +230,7 @@ func (n *node) insertChild(numParams uint8, path, fullPath string, handle Handle
 			switch path[end] {
 			// the wildcard name must not contain ':' and '*'
 			case ':', '*':
-				panic("only one wildcard per path segment is allowed, has: '" +
+				return errors.New("only one wildcard per path segment is allowed, has: '" +
 					path[i:] + "' in path '" + fullPath + "'")
 			default:
 				end++
@@ -235,13 +240,13 @@ func (n *node) insertChild(numParams uint8, path, fullPath string, handle Handle
 		// check if this Node existing children which would be
 		// unreachable if we insert the wildcard here
 		if len(n.children) > 0 {
-			panic("wildcard route '" + path[i:end] +
+			return errors.New("wildcard route '" + path[i:end] +
 				"' conflicts with existing children in path '" + fullPath + "'")
 		}
 
 		// check if the wildcard has a name
 		if end-i < 2 {
-			panic("wildcards must be named with a non-empty name in path '" + fullPath + "'")
+			return errors.New("wildcards must be named with a non-empty name in path '" + fullPath + "'")
 		}
 
 		if c == ':' { // param
@@ -277,17 +282,17 @@ func (n *node) insertChild(numParams uint8, path, fullPath string, handle Handle
 
 		} else { // catchAll
 			if end != max || numParams > 1 {
-				panic("catch-all routes are only allowed at the end of the path in path '" + fullPath + "'")
+				return errors.New("catch-all routes are only allowed at the end of the path in path '" + fullPath + "'")
 			}
 
 			if len(n.path) > 0 && n.path[len(n.path)-1] == '/' {
-				panic("catch-all conflicts with existing handle for the path segment root in path '" + fullPath + "'")
+				return errors.New("catch-all conflicts with existing handle for the path segment root in path '" + fullPath + "'")
 			}
 
 			// currently fixed width 1 for '/'
 			i--
 			if path[i] != '/' {
-				panic("no / before catch-all in path '" + fullPath + "'")
+				return errors.New("no / before catch-all in path '" + fullPath + "'")
 			}
 
 			n.path = path[offset:i]
@@ -313,13 +318,15 @@ func (n *node) insertChild(numParams uint8, path, fullPath string, handle Handle
 			}
 			n.children = []*node{child}
 
-			return
+			return nil
 		}
 	}
 
 	// insert remaining path part and handle to the leaf
 	n.path = path[offset:]
 	n.handle = handle
+
+	return nil
 }
 
 // Returns the handle registered with the given path (key). The values of
